@@ -1,4 +1,4 @@
-﻿module xserial.attribute;
+module xserial.attribute;
 
 import std.system : Endian;
 import std.traits : isIntegral;
@@ -14,19 +14,35 @@ enum Exclude;
 
 /**
  * Includes this even if it would otherwise be excluded.
- * If Exclude (or other UDA(@)) and Include are present value will be included.
+ * If Exclude (or other UDA(@)) and Include are present the last one is used, except when excluded with `@EncodeOnly` or `@DecodeOnly`.
  * Can also be used on @property methods to include them. (Be sure both the setter and getter exist!)
  * If used on a value of a base class value will be included.
  */
- enum Include;
+enum Include;
+
+/**
+ * Used for advanced addedUDAs
+ */
+template Excluder(UDA_) {
+	alias UDA = UDA_;
+}
+
+/**
+ * Used for advanced addedUDAs
+ */
+template Includer(UDA_) {
+	alias UDA = UDA_;
+}
 
 /**
  * Excludes the field from decoding, encode only.
+ * Field with be excluded in decoding regardles of any other UDA.
  */
 enum EncodeOnly;
 
 /**
  * Excludes the field from encoding, decode only.
+ * Field with be excluded in encoding regardles of any other UDA.
  */
 enum DecodeOnly;
 
@@ -73,3 +89,5 @@ unittest { // for code coverage
 	EndianLength!uint(Endian.bigEndian);
 
 }
+
+

@@ -1,9 +1,10 @@
 module xserial.serial;
 
 import std.system : Endian, endian;
-import std.traits : isArray, isDynamicArray, isStaticArray, isAssociativeArray, ForeachType, KeyType, ValueType, isIntegral, isFloatingPoint, isSomeChar, isType, isCallable, isPointer, hasUDA, getUDAs;
+import std.traits : isArray, isDynamicArray, isStaticArray, isAssociativeArray, ForeachType, KeyType, ValueType, isIntegral, isFloatingPoint, isSomeChar, isType, isCallable, isPointer, hasUDA, getUDAs, TemplateOf;
 import std.typecons : isTuple;
 import std.algorithm.searching : canFind;
+import std.meta : AliasSeq;
 
 import xbuffer.buffer : canSwapEndianness, Buffer, BufferOverflowException;
 import xbuffer.memory : xalloc, xfree;
@@ -14,91 +15,51 @@ import xserial.attribute;
 /**
  * Serializes some data.
  */
-ubyte[] serialize(Endian endianness, L, Endian lengthEndianness, T)(T value, Buffer buffer) {
-	serializeImpl!(endianness, L, lengthEndianness, T)(buffer, value);
-	return buffer.data!ubyte;
+ubyte[] serialize(Endian endianness=endian, L=uint, Endian lengthEndianness=endianness, T)(T value, Buffer buffer) {
+	return Grouped!().serialize!(endianness, L, lengthEndianness)(value,buffer);
 }
-
 /// ditto
-ubyte[] serialize(Endian endianness, L, Endian lengthEndianness, T)(T value) {
-	Buffer buffer = xalloc!Buffer(64);
-	scope(exit) xfree(buffer);
-	return serialize!(endianness, L, lengthEndianness, T)(value, buffer).dup;
+ubyte[] serialize(Endian endianness=endian, L=uint, Endian lengthEndianness=endianness, T)(T value) {
+	return Grouped!().serialize!(endianness, L, lengthEndianness)(value);
 }
-
-/// ditto
-ubyte[] serialize(Endian endianness, L, T)(T value, Buffer buffer) {
-	return serialize!(endianness, L, endianness, T)(value, buffer);
-}
-
-/// ditto
-ubyte[] serialize(Endian endianness, L, T)(T value) {
-	return serialize!(endianness, L, endianness, T)(value);
-}
-
-/// ditto
-ubyte[] serialize(Endian endianness, T)(T value, Buffer buffer) {
-	return serialize!(endianness, uint)(value, buffer);
-}
-
-/// ditto
-ubyte[] serialize(Endian endianness, T)(T value) {
-	return serialize!(endianness, uint)(value);
-}
-
-/// ditto
-ubyte[] serialize(T)(T value, Buffer buffer) {
-	return serialize!(endian, uint, T)(value, buffer);
-}
-
-/// ditto
-ubyte[] serialize(T)(T value) {
-	return serialize!(endian, uint, T)(value);
-}
-
 /**
  * Deserializes some data.
  */
-T deserialize(T, Endian endianness, L, Endian lengthEndianness)(Buffer buffer) {
-	return deserializeImpl!(endianness, L, lengthEndianness, T)(buffer);
+T deserialize(T, Endian endianness=endian, L=uint, Endian lengthEndianness=endianness)(Buffer buffer) {
+	return Grouped!().deserialize!(T, endianness, L, lengthEndianness)(buffer);
+}
+/// ditto
+T deserialize(T, Endian endianness=endian, L=uint, Endian lengthEndianness=endianness)(in ubyte[] data) {
+	return Grouped!().deserialize!(T, endianness, L, lengthEndianness)(data);
+}
+ template Grouped(AddedUDAs...) {
+	/**
+	 * Serializes some data.
+	 */
+	ubyte[] serialize(Endian endianness=endian, L=uint, Endian lengthEndianness=endianness, T)(T value, Buffer buffer) {
+		serializeImpl!(endianness, L, lengthEndianness, T, AddedUDAs)(buffer, value);
+		return buffer.data!ubyte;
+	}
+	/// ditto
+	ubyte[] serialize(Endian endianness=endian, L=uint, Endian lengthEndianness=endianness, T)(T value) {
+		Buffer buffer = xalloc!Buffer(64);
+		scope(exit) xfree(buffer);
+		return Grouped!AddedUDAs.serialize!(endianness, L, lengthEndianness, T)(value, buffer).dup;
+	}
+	/**
+	 * Deserializes some data.
+	 */
+	T deserialize(T, Endian endianness=endian, L=uint, Endian lengthEndianness=endianness)(Buffer buffer) {
+		return deserializeImpl!(endianness, L, lengthEndianness, T, AddedUDAs)(buffer);
+	}
+	/// ditto
+	T deserialize(T, Endian endianness=endian, L=uint, Endian lengthEndianness=endianness)(in ubyte[] data) {
+		Buffer buffer = xalloc!Buffer(data);
+		scope(exit) xfree(buffer);
+		return deserialize!(T, endianness, L, lengthEndianness, AddedUDAs)(buffer);
+	}
 }
 
-/// ditto
-T deserialize(T, Endian endianness, L, Endian lengthEndianness)(in ubyte[] data) {
-	Buffer buffer = xalloc!Buffer(data);
-	scope(exit) xfree(buffer);
-	return deserialize!(T, endianness, L, lengthEndianness)(buffer);
-}
-
-/// ditto
-T deserialize(T, Endian endianness, L)(Buffer buffer) {
-	return deserialize!(T, endianness, L, endianness)(buffer);
-}
-
-/// ditto
-T deserialize(T, Endian endianness, L)(in ubyte[] data) {
-	return deserialize!(T, endianness, L, endianness)(data);
-}
-
-/// ditto
-T deserialize(T, Endian endianness)(Buffer buffer) {
-	return deserialize!(T, endianness, uint)(buffer);
-}
-
-/// ditto
-T deserialize(T, Endian endianness)(in ubyte[] data) {
-	return deserialize!(T, endianness, uint)(data);
-}
-
-/// ditto
-T deserialize(T)(Buffer buffer) {
-	return deserialize!(T, endian, uint)(buffer);
-}
-
-/// ditto
-T deserialize(T)(in ubyte[] data) {
-	return deserialize!(T, endian, uint)(data);
-}
 
 // -----------
 // common data
@@ -112,35 +73,42 @@ enum EndianType {
 	
 }
 
-template Members(T, alias Only) {
+template Members(T, Only, AddedUDAs...) {
+	alias UDAs = AliasSeq!(AddedUDAs,Includer!Include,Excluder!Exclude);
 	
 	import std.typetuple : TypeTuple;
 	
 	mixin({
-			
 		string ret = "alias Members = TypeTuple!(";
 		foreach(member ; __traits(allMembers, T)) {
-			static if(is(typeof(mixin("T." ~ member)))) {
-				mixin("alias M = typeof(T." ~ member ~ ");");
-				static if(
-					isType!M &&
-					!isCallable!M &&
-					(
-						hasUDA!(__traits(getMember, T, member), Include) ||
-						(
-							[__traits(derivedMembers, T)].canFind(member) &&
-							!__traits(compiles, { mixin("auto test=T." ~ member ~ ";"); }) &&			// static members
-							!__traits(compiles, { mixin("auto test=T.init." ~ member ~ "();"); }) &&	// properties
-							!hasUDA!(__traits(getMember, T, member), Exclude) &&
-							!hasUDA!(__traits(getMember, T, member), Only)
-						)
-					)
-					){
-					ret ~= `"` ~ member ~ `",`;
-					
+			static if(!hasUDA!(__traits(getMember, T, member), Only)) {
+				static foreach_reverse (Attribute; __traits(getAttributes, __traits(getMember, T, member))) {
+					static foreach(A;UDAs) {
+						static if(is(Attribute==A.UDA)) {
+							static if (__traits(isSame,TemplateOf!A,Includer)) {
+								ret ~= `"` ~ member ~ `",`;
+							}
+							else static assert(__traits(isSame,TemplateOf!A,Excluder), "AddedUDA is not a template of Include or Exclude");
+							enum done = true;
+						}
+					}
+				}
+				static if (!is(typeof(done))) {
+					static if(is(typeof(mixin("T." ~ member)))) {
+						mixin("alias M = typeof(T." ~ member ~ ");");
+						static if(
+							isType!M &&
+							!isCallable!M &&
+							!__traits(compiles, { mixin("auto test=T." ~ member ~ ";"); }) &&   // static members
+							!__traits(compiles, { mixin("auto test=T.init." ~ member ~ "();"); }) // properties
+							) {
+							ret ~= `"` ~ member ~ `",`;
+							
+						}
+					}
 				}
 			}
-		}
+		}	
 		return ret ~ ");";
 		
 	}());
@@ -151,25 +119,25 @@ template Members(T, alias Only) {
 // serialization
 // -------------
 
-void serializeImpl(Endian endianness, L, Endian lengthEndianness, T)(Buffer buffer, T value) {
-	static if(isVar!L) serializeImpl!(cast(EndianType)endianness, L.Type, EndianType.var, L.Type, EndianType.var, T)(buffer, value);
-	else serializeImpl!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness, L, cast(EndianType)lengthEndianness, T)(buffer, value);
+void serializeImpl(Endian endianness, L, Endian lengthEndianness, T, AddedUDAs...)(Buffer buffer, T value) {
+	static if(isVar!L) serializeImpl!(cast(EndianType)endianness, L.Type, EndianType.var, L.Type, EndianType.var, T, AddedUDAs)(buffer, value);
+	else serializeImpl!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness, L, cast(EndianType)lengthEndianness, T, AddedUDAs)(buffer, value);
 }
 
-void serializeImpl(EndianType endianness, OL, EndianType ole, CL, EndianType cle, T)(Buffer buffer, T value) {
+void serializeImpl(EndianType endianness, OL, EndianType ole, CL, EndianType cle, T, AddedUDAs...)(Buffer buffer, T value) {
 	static if(isArray!T) {
 		static if(isDynamicArray!T) serializeLength!(cle, CL)(buffer, value.length);
-		serializeArray!(endianness, OL, ole)(buffer, value);
+		serializeArray!(endianness, OL, ole, AddedUDAs)(buffer, value);
 	} else static if(isAssociativeArray!T) {
 		serializeLength!(cle, CL)(buffer, value.length);
-		serializeAssociativeArray!(endianness, OL, ole)(buffer, value);
+		serializeAssociativeArray!(endianness, OL, ole, AddedUDAs)(buffer, value);
 	} else static if(isTuple!T) {
 		serializeTuple!(endianness, OL, ole)(buffer, value);
 	} else static if(is(T == class) || is(T == struct) || is(T == interface)) {
 		static if(__traits(hasMember, T, "serialize") && __traits(compiles, value.serialize(buffer))) {
 			value.serialize(buffer);
 		} else {
-			serializeMembers!(endianness, OL, ole)(buffer, value);
+			serializeMembers!(endianness, OL, ole, AddedUDAs)(buffer, value);
 		}
 	} else static if(is(T : bool) || isIntegral!T || isFloatingPoint!T || isSomeChar!T) {
 		serializeNumber!endianness(buffer, value);
@@ -194,31 +162,31 @@ void serializeLength(EndianType endianness, L)(Buffer buffer, size_t length) {
 	else serializeNumber!(endianness, L)(buffer, length);
 }
 
-void serializeArray(EndianType endianness, OL, EndianType ole, T)(Buffer buffer, T array) if(isArray!T) {
+void serializeArray(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(Buffer buffer, T array) if(isArray!T) {
 	static if(canSwapEndianness!(ForeachType!T) && !is(ForeachType!T == struct) && !is(ForeachType!T == class) && endianness != EndianType.var) {
 		buffer.write!(cast(Endian)endianness)(array);
 	} else {
 		foreach(value ; array) {
-			serializeImpl!(endianness, OL, ole, OL, ole)(buffer, value);
+			serializeImpl!(endianness, OL, ole, OL, ole, AddedUDAs)(buffer, value);
 		}
 	}
 }
 
-void serializeAssociativeArray(EndianType endianness, OL, EndianType ole, T)(Buffer buffer, T array) if(isAssociativeArray!T) {
+void serializeAssociativeArray(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(Buffer buffer, T array) if(isAssociativeArray!T) {
 	foreach(key, value; array) {
-		serializeImpl!(endianness, OL, ole, OL, ole)(buffer, key);
-		serializeImpl!(endianness, OL, ole, OL, ole)(buffer, value);
+		serializeImpl!(endianness, OL, ole, OL, ole, AddedUDAs)(buffer, key);
+		serializeImpl!(endianness, OL, ole, OL, ole, AddedUDAs)(buffer, value);
 	}
 }
 
-void serializeTuple(EndianType endianness, OL, EndianType ole, T)(Buffer buffer, T tuple) if(isTuple!T) {
+void serializeTuple(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(Buffer buffer, T tuple) if(isTuple!T) {
 	static foreach(i ; 0..tuple.fieldNames.length) {
 		serializeImpl!(endianness, OL, ole, OL, ole)(buffer, tuple[i]);
 	}
 }
 
-void serializeMembers(EndianType endianness, L, EndianType le, T)(Buffer __buffer, T __container) {
-	foreach(member ; Members!(T, DecodeOnly)) {
+void serializeMembers(EndianType endianness, L, EndianType le, T, AddedUDAs...)(Buffer __buffer, T __container) {
+	foreach(member ; Members!(T, DecodeOnly, AddedUDAs)) {
 		
 		mixin("alias M = typeof(__container." ~ member ~ ");");
 		
@@ -239,11 +207,11 @@ void serializeMembers(EndianType endianness, L, EndianType le, T)(Buffer __buffe
 				immutable e = "L, le, L, le";
 			}
 			
-			static if(hasUDA!(__traits(getMember, T, member), NoLength)) immutable ret = "xserial.serial.serializeArray!(endianness, L, le, M)(__buffer, __container." ~ member ~ ");";
-			else static if(hasUDA!(__traits(getMember, T, member), Var)) immutable ret = "xserial.serial.serializeImpl!(EndianType.var, " ~ e ~ ", M)(__buffer, __container." ~ member ~ ");";
-			else static if(hasUDA!(__traits(getMember, T, member), BigEndian)) immutable ret = "xserial.serial.serializeImpl!(EndianType.bigEndian, " ~ e ~ ", M)(__buffer, __container." ~ member ~ ");";
-			else static if(hasUDA!(__traits(getMember, T, member), LittleEndian)) immutable ret = "xserial.serial.serializeImpl!(EndianType.littleEndian, " ~ e ~ ", M)(__buffer, __container." ~ member ~ ");";
-			else immutable ret = "xserial.serial.serializeImpl!(endianness, " ~ e ~ ", M)(__buffer, __container." ~ member ~ ");";
+			static if(hasUDA!(__traits(getMember, T, member), NoLength)) immutable ret = "xserial.serial.serializeArray!(endianness, L, le, M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
+			else static if(hasUDA!(__traits(getMember, T, member), Var)) immutable ret = "xserial.serial.serializeImpl!(EndianType.var, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
+			else static if(hasUDA!(__traits(getMember, T, member), BigEndian)) immutable ret = "xserial.serial.serializeImpl!(EndianType.bigEndian, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
+			else static if(hasUDA!(__traits(getMember, T, member), LittleEndian)) immutable ret = "xserial.serial.serializeImpl!(EndianType.littleEndian, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
+			else immutable ret = "xserial.serial.serializeImpl!(endianness, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
 			
 			static if(!hasUDA!(__traits(getMember, T, member), Condition)) return ret;
 			else return "with(__container){if(" ~ getUDAs!(__traits(getMember, T, member), Condition)[0].condition ~ "){" ~ ret ~ "}}";
@@ -257,27 +225,27 @@ void serializeMembers(EndianType endianness, L, EndianType le, T)(Buffer __buffe
 // deserialization
 // ---------------
 
-T deserializeImpl(Endian endianness, L, Endian lengthEndianness, T)(Buffer buffer) {
-	static if(isVar!L) return deserializeImpl!(cast(EndianType)endianness, L.Type, EndianType.var, L.Type, EndianType.var, T)(buffer);
-	else return deserializeImpl!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness, L, cast(EndianType)lengthEndianness, T)(buffer);
+T deserializeImpl(Endian endianness, L, Endian lengthEndianness, T, AddedUDAs...)(Buffer buffer) {
+	static if(isVar!L) return deserializeImpl!(cast(EndianType)endianness, L.Type, EndianType.var, L.Type, EndianType.var, T, AddedUDAs)(buffer);
+	else return deserializeImpl!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness, L, cast(EndianType)lengthEndianness, T, AddedUDAs)(buffer);
 }
 
-T deserializeImpl(EndianType endianness, OL, EndianType ole, CL, EndianType cle, T)(Buffer buffer) {
+T deserializeImpl(EndianType endianness, OL, EndianType ole, CL, EndianType cle, T, AddedUDAs...)(Buffer buffer) {
 	static if(isStaticArray!T) {
-		return deserializeStaticArray!(endianness, OL, ole, T)(buffer);
+		return deserializeStaticArray!(endianness, OL, ole, T, AddedUDAs)(buffer);
 	} else static if(isDynamicArray!T) {
-		return deserializeDynamicArray!(endianness, OL, ole, T)(buffer, deserializeLength!(cle, CL)(buffer));
+		return deserializeDynamicArray!(endianness, OL, ole, T, AddedUDAs)(buffer, deserializeLength!(cle, CL)(buffer));
 	} else static if(isAssociativeArray!T) {
-		return deserializeAssociativeArray!(endianness, OL, ole, T)(buffer, deserializeLength!(cle, CL)(buffer));
+		return deserializeAssociativeArray!(endianness, OL, ole, T, AddedUDAs)(buffer, deserializeLength!(cle, CL)(buffer));
 	} else static if(isTuple!T) {
-		return deserializeTuple!(endianness, OL, ole, T)(buffer);
+		return deserializeTuple!(endianness, OL, ole, T, AddedUDAs)(buffer);
 	} else static if(is(T == class) || is(T == struct)) {
 		T ret;
 		static if(is(T == class)) ret = new T();
 		static if(__traits(hasMember, T, "deserialize") && __traits(compiles, ret.deserialize(buffer))) {
 			ret.deserialize(buffer);
 		} else {
-			deserializeMembers!(endianness, OL, ole)(buffer, &ret);
+			deserializeMembers!(endianness, OL, ole, AddedUDAs)(buffer, &ret);
 		}
 		return ret;
 	} else static if(is(T : bool) || isIntegral!T || isFloatingPoint!T || isSomeChar!T) {
@@ -303,50 +271,50 @@ size_t deserializeLength(EndianType endianness, L)(Buffer buffer) {
 	else return deserializeNumber!(endianness, L)(buffer);
 }
 
-T deserializeStaticArray(EndianType endianness, OL, EndianType ole, T)(Buffer buffer) if(isStaticArray!T) {
+T deserializeStaticArray(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(Buffer buffer) if(isStaticArray!T) {
 	T ret;
 	foreach(ref value ; ret) {
-		value = deserializeImpl!(endianness, OL, ole, OL, ole, ForeachType!T)(buffer);
+		value = deserializeImpl!(endianness, OL, ole, OL, ole, ForeachType!T, AddedUDAs)(buffer);
 	}
 	return ret;
 }
 
-T deserializeDynamicArray(EndianType endianness, OL, EndianType ole, T)(Buffer buffer, size_t length) if(isDynamicArray!T) {
+T deserializeDynamicArray(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(Buffer buffer, size_t length) if(isDynamicArray!T) {
 	T ret;
 	foreach(i ; 0..length) {
-		ret ~= deserializeImpl!(endianness, OL, ole, OL, ole, ForeachType!T)(buffer);
+		ret ~= deserializeImpl!(endianness, OL, ole, OL, ole, ForeachType!T, AddedUDAs)(buffer);
 	}
 	return ret;
 }
 
-T deserializeAssociativeArray(EndianType endianness, OL, EndianType ole, T)(Buffer buffer, size_t length) if(isAssociativeArray!T) {
+T deserializeAssociativeArray(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(Buffer buffer, size_t length) if(isAssociativeArray!T) {
 	T ret;
 	foreach(i ; 0..length) {
-		ret[deserializeImpl!(endianness, OL, ole, OL, ole, KeyType!T)(buffer)] = deserializeImpl!(endianness, OL, ole, OL, ole, ValueType!T)(buffer);
+		ret[deserializeImpl!(endianness, OL, ole, OL, ole, KeyType!T, AddedUDAs)(buffer)] = deserializeImpl!(endianness, OL, ole, OL, ole, ValueType!T)(buffer);
 	}
 	return ret;
 }
 
-T deserializeNoLengthArray(EndianType endianness, OL, EndianType ole, T)(Buffer buffer) if(isDynamicArray!T) {
+T deserializeNoLengthArray(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(Buffer buffer) if(isDynamicArray!T) {
 	T ret;
 	try {
-		while(true) ret ~= deserializeImpl!(endianness, OL, ole, OL, ole, ForeachType!T)(buffer);
+		while(true) ret ~= deserializeImpl!(endianness, OL, ole, OL, ole, ForeachType!T, AddedUDAs)(buffer);
 	} catch(BufferOverflowException) {}
 	return ret;
 }
 
-T deserializeTuple(EndianType endianness, OL, EndianType ole, T)(Buffer buffer) if(isTuple!T) {
+T deserializeTuple(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(Buffer buffer) if(isTuple!T) {
 	T ret;
 	foreach(i, U; T.Types) {
-		ret[i] = deserializeImpl!(endianness, OL, ole, OL, ole, U)(buffer);
+		ret[i] = deserializeImpl!(endianness, OL, ole, OL, ole, U, AddedUDAs)(buffer);
 	}
 	return ret;
 }
 
-void deserializeMembers(EndianType endianness, L, EndianType le, C)(Buffer __buffer, C __container) {
+void deserializeMembers(EndianType endianness, L, EndianType le, C, AddedUDAs...)(Buffer __buffer, C __container) {
 	static if(isPointer!C) alias T = typeof(*__container);
 	else alias T = C;
-	foreach(member ; Members!(T, EncodeOnly)) {
+	foreach(member ; Members!(T, EncodeOnly, AddedUDAs)) {
 		
 		mixin("alias M = typeof(__container." ~ member ~ ");");
 		
@@ -367,11 +335,11 @@ void deserializeMembers(EndianType endianness, L, EndianType le, C)(Buffer __buf
 					immutable e = "L, le, L, le";
 				}
 				
-				static if(hasUDA!(__traits(getMember, T, member), NoLength)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeNoLengthArray!(endianness, L, le, M)(__buffer);";
-				else static if(hasUDA!(__traits(getMember, T, member), Var)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(EndianType.var, " ~ e ~ ", M)(__buffer);";
-				else static if(hasUDA!(__traits(getMember, T, member), BigEndian)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(EndianType.bigEndian, " ~ e ~ ", M)(__buffer);";
-				else static if(hasUDA!(__traits(getMember, T, member), LittleEndian)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(EndianType.littleEndian, " ~ e ~ ", M)(__buffer);";
-				else immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(endianness, " ~ e ~ ", M)(__buffer);";
+				static if(hasUDA!(__traits(getMember, T, member), NoLength)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeNoLengthArray!(endianness, L, le, M, AddedUDAs)(__buffer);";
+				else static if(hasUDA!(__traits(getMember, T, member), Var)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(EndianType.var, " ~ e ~ ", M, AddedUDAs)(__buffer);";
+				else static if(hasUDA!(__traits(getMember, T, member), BigEndian)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(EndianType.bigEndian, " ~ e ~ ", M, AddedUDAs)(__buffer);";
+				else static if(hasUDA!(__traits(getMember, T, member), LittleEndian)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(EndianType.littleEndian, " ~ e ~ ", M, AddedUDAs)(__buffer);";
+				else immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(endianness, " ~ e ~ ", M, AddedUDAs)(__buffer);";
 				
 				static if(!hasUDA!(__traits(getMember, T, member), Condition)) return ret;
 				else return "with(__container){if(" ~ getUDAs!(__traits(getMember, T, member), Condition)[0].condition ~ "){" ~ ret ~ "}}";
