@@ -677,3 +677,22 @@ void deserializeMembers(EndianType endianness, L, EndianType le, C, AddedUDAs...
 	assert(buffer.data.length == 0);
 
 }
+
+@("because the coverage report does not understand CTFE") unittest{
+	enum G;
+	enum N;
+	struct Test1 {
+		ubyte z;
+		@Exclude:
+		@G ubyte a;
+		
+		@Include @N ubyte b;
+		
+		@Condition("a==1") ubyte c;
+		@G {
+			ubyte d;
+			@N ubyte e;
+		}
+	}
+	auto test1 = getSerializeMembers!(Test1, EncodeOnly, Includer!G, Excluder!N);
+}
