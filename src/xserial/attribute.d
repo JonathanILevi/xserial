@@ -23,14 +23,14 @@ enum Include;
 /**
  * Used for advanced addedUDAs
  */
-template Excluder(UDA_) {
+template Excluder(alias UDA_) {
 	alias UDA = UDA_;
 }
 
 /**
  * Used for advanced addedUDAs
  */
-template Includer(UDA_) {
+template Includer(alias UDA_) {
 	alias UDA = UDA_;
 }
 

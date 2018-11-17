@@ -56,7 +56,7 @@ T deserialize(T, Endian endianness=endian, L=uint, Endian lengthEndianness=endia
 	T deserialize(T, Endian endianness=endian, L=uint, Endian lengthEndianness=endianness)(in ubyte[] data) {
 		Buffer buffer = xalloc!Buffer(data);
 		scope(exit) xfree(buffer);
-		return deserialize!(T, endianness, L, lengthEndianness, AddedUDAs)(buffer);
+		return Grouped!AddedUDAs.deserialize!(T, endianness, L, lengthEndianness)(buffer);
 	}
 }
 
@@ -73,46 +73,80 @@ enum EndianType {
 	
 }
 
-template Members(T, Only, AddedUDAs...) {
+/**
+ * Copied and slightly modified from Phobos `std.traits`. (dlang.org/phobos/std_traits.html)
+ */
+private template isDesiredUDA(alias attribute, alias toCheck)
+{
+    static if (is(typeof(attribute)) && !__traits(isTemplate, attribute))
+    {
+        static if (__traits(compiles, toCheck == attribute))
+            enum isDesiredUDA = toCheck == attribute;
+        else
+            enum isDesiredUDA = false;
+    }
+    else static if (is(typeof(toCheck)))
+    {
+        static if (__traits(isTemplate, attribute))
+            enum isDesiredUDA =  isInstanceOf!(attribute, typeof(toCheck));
+        else
+            enum isDesiredUDA = is(typeof(toCheck) == attribute);
+    }
+    else static if (__traits(isTemplate, attribute))
+        enum isDesiredUDA = isInstanceOf!(attribute, toCheck);
+    else
+        enum isDesiredUDA = is(toCheck == attribute);
+}
+
+auto getSerializeMembers(T, Only, AddedUDAs...)() {
 	alias UDAs = AliasSeq!(AddedUDAs,Includer!Include,Excluder!Exclude);
 	
-	import std.typetuple : TypeTuple;
+	struct Member{
+		string name	;
+		string condition	="";
+	}
 	
-	mixin({
-		string ret = "alias Members = TypeTuple!(";
-		foreach(member ; __traits(allMembers, T)) {
-			static if(!hasUDA!(__traits(getMember, T, member), Only)) {
-				static foreach_reverse (Attribute; __traits(getAttributes, __traits(getMember, T, member))) {
-					static foreach(A;UDAs) {
-						static if(is(Attribute==A.UDA)) {
-							static if (__traits(isSame,TemplateOf!A,Includer)) {
-								ret ~= `"` ~ member ~ `",`;
-							}
-							else static assert(__traits(isSame,TemplateOf!A,Excluder), "AddedUDA is not a template of Include or Exclude");
-							enum done = true;
-						}
-					}
-				}
+	Member[] members;
+	
+	foreach(member; __traits(allMembers, T)) {
+		string condition = "";
+		static if(!hasUDA!(__traits(getMember, T, member), Only)) {
+			static foreach_reverse (Attribute; __traits(getAttributes, __traits(getMember, T, member))) {
 				static if (!is(typeof(done))) {
-					static if(is(typeof(mixin("T." ~ member)))) {
-						mixin("alias M = typeof(T." ~ member ~ ");");
-						static if(
-							isType!M &&
-							!isCallable!M &&
-							!__traits(compiles, { mixin("auto test=T." ~ member ~ ";"); }) &&   // static members
-							!__traits(compiles, { mixin("auto test=T.init." ~ member ~ "();"); }) // properties
-							) {
-							ret ~= `"` ~ member ~ `",`;
-							
+					static if(is(typeof(Attribute)==Condition)) {
+						members ~= Member(member, Attribute.condition);
+						enum done = true;
+					}
+					else static foreach(A;UDAs) {
+						static if (!is(typeof(done))) {
+							static if(isDesiredUDA!(Attribute,A.UDA)) {
+								static if (__traits(isSame,TemplateOf!A,Includer)) {
+									members ~= Member(member);
+								}
+								else static assert(__traits(isSame,TemplateOf!A,Excluder), "AddedUDA is not a template of Include or Exclude");
+								enum done = true;
+							}
 						}
 					}
 				}
 			}
-		}	
-		return ret ~ ");";
-		
-	}());
+			static if (!is(typeof(done))) {
+				static if(is(typeof(mixin("T." ~ member)))) {
+					mixin("alias M = typeof(T." ~ member ~ ");");
+					static if(
+						isType!M &&
+						!isCallable!M &&
+						!__traits(compiles, { mixin("auto test=T." ~ member ~ ";"); }) &&   // static members
+						!__traits(compiles, { mixin("auto test=T.init." ~ member ~ "();"); }) // properties
+						) {
+						members ~= Member(member);
+					}
+				}
+			}
+		}
+	}
 	
+	return members;
 }
 
 // -------------
@@ -137,7 +171,7 @@ void serializeImpl(EndianType endianness, OL, EndianType ole, CL, EndianType cle
 		static if(__traits(hasMember, T, "serialize") && __traits(compiles, value.serialize(buffer))) {
 			value.serialize(buffer);
 		} else {
-			serializeMembers!(endianness, OL, ole, AddedUDAs)(buffer, value);
+			serializeMembers!(endianness, OL, ole, T, AddedUDAs)(buffer, value);
 		}
 	} else static if(is(T : bool) || isIntegral!T || isFloatingPoint!T || isSomeChar!T) {
 		serializeNumber!endianness(buffer, value);
@@ -186,39 +220,44 @@ void serializeTuple(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(
 }
 
 void serializeMembers(EndianType endianness, L, EndianType le, T, AddedUDAs...)(Buffer __buffer, T __container) {
-	foreach(member ; Members!(T, DecodeOnly, AddedUDAs)) {
+	enum serMems = getSerializeMembers!(T, DecodeOnly, AddedUDAs);
+	static foreach(member; serMems) {{
 		
-		mixin("alias M = typeof(__container." ~ member ~ ");");
+		mixin("alias M = typeof(__container." ~ member.name ~ ");");
 		
-		static foreach(uda ; __traits(getAttributes, __traits(getMember, T, member))) {
+		static foreach(uda ; __traits(getAttributes, __traits(getMember, T, member.name))) {
 			static if(is(uda : Custom!C, C)) {
 				enum __custom = true;
-				uda.C.serialize(mixin("__container." ~ member), __buffer);
+				uda.C.serialize(mixin("__container." ~ member.name), __buffer);
 			}
 		}
 		
-		static if(!is(typeof(__custom))) mixin({
+		static if(!is(typeof(__custom))) 
+		mixin(
+		{
 				
-			static if(hasUDA!(__traits(getMember, T, member), LengthImpl)) {
+			static if(hasUDA!(__traits(getMember, T, member.name), LengthImpl)) {
 				import std.conv : to;
-				auto length = getUDAs!(__traits(getMember, T, member), LengthImpl)[0];
+				auto length = getUDAs!(__traits(getMember, T, member.name), LengthImpl)[0];
 				immutable e = "L, le, " ~ length.type ~ ", " ~ (length.endianness == -1 ? "endianness" : "EndianType." ~ (cast(EndianType)length.endianness).to!string);
 			} else {
 				immutable e = "L, le, L, le";
 			}
 			
-			static if(hasUDA!(__traits(getMember, T, member), NoLength)) immutable ret = "xserial.serial.serializeArray!(endianness, L, le, M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
-			else static if(hasUDA!(__traits(getMember, T, member), Var)) immutable ret = "xserial.serial.serializeImpl!(EndianType.var, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
-			else static if(hasUDA!(__traits(getMember, T, member), BigEndian)) immutable ret = "xserial.serial.serializeImpl!(EndianType.bigEndian, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
-			else static if(hasUDA!(__traits(getMember, T, member), LittleEndian)) immutable ret = "xserial.serial.serializeImpl!(EndianType.littleEndian, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
-			else immutable ret = "xserial.serial.serializeImpl!(endianness, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member ~ ");";
+			static if(hasUDA!(__traits(getMember, T, member.name), NoLength)) immutable ret = "xserial.serial.serializeArray!(endianness, L, le, M, AddedUDAs)(__buffer, __container." ~ member.name ~ ");";
+			else static if(hasUDA!(__traits(getMember, T, member.name), Var)) immutable ret = "xserial.serial.serializeImpl!(EndianType.var, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member.name ~ ");";
+			else static if(hasUDA!(__traits(getMember, T, member.name), BigEndian)) immutable ret = "xserial.serial.serializeImpl!(EndianType.bigEndian, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member.name ~ ");";
+			else static if(hasUDA!(__traits(getMember, T, member.name), LittleEndian)) immutable ret = "xserial.serial.serializeImpl!(EndianType.littleEndian, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member.name ~ ");";
+			else immutable ret = "xserial.serial.serializeImpl!(endianness, " ~ e ~ ", M, AddedUDAs)(__buffer, __container." ~ member.name ~ ");";
 			
-			static if(!hasUDA!(__traits(getMember, T, member), Condition)) return ret;
-			else return "with(__container){if(" ~ getUDAs!(__traits(getMember, T, member), Condition)[0].condition ~ "){" ~ ret ~ "}}";
+			if (member.condition.length==0) return ret;
+			else return "with(__container){if(" ~ member.condition ~ "){" ~ ret ~ "}}";
 			
-		}());
+		}
+		()
+		);
 		
-	}
+	}}
 }
 
 // ---------------
@@ -245,7 +284,7 @@ T deserializeImpl(EndianType endianness, OL, EndianType ole, CL, EndianType cle,
 		static if(__traits(hasMember, T, "deserialize") && __traits(compiles, ret.deserialize(buffer))) {
 			ret.deserialize(buffer);
 		} else {
-			deserializeMembers!(endianness, OL, ole, AddedUDAs)(buffer, &ret);
+			deserializeMembers!(endianness, OL, ole, T*, AddedUDAs)(buffer, &ret);
 		}
 		return ret;
 	} else static if(is(T : bool) || isIntegral!T || isFloatingPoint!T || isSomeChar!T) {
@@ -314,39 +353,41 @@ T deserializeTuple(EndianType endianness, OL, EndianType ole, T, AddedUDAs...)(B
 void deserializeMembers(EndianType endianness, L, EndianType le, C, AddedUDAs...)(Buffer __buffer, C __container) {
 	static if(isPointer!C) alias T = typeof(*__container);
 	else alias T = C;
-	foreach(member ; Members!(T, EncodeOnly, AddedUDAs)) {
+	
+	enum serMems = getSerializeMembers!(T, EncodeOnly, AddedUDAs);
+	static foreach(member; serMems) {{
 		
-		mixin("alias M = typeof(__container." ~ member ~ ");");
+		mixin("alias M = typeof(__container." ~ member.name ~ ");");
 		
-		static foreach(uda ; __traits(getAttributes, __traits(getMember, T, member))) {
+		static foreach(uda ; __traits(getAttributes, __traits(getMember, T, member.name))) {
 			static if(is(uda : Custom!C, C)) {
 				enum __custom = true;
-				mixin("__container." ~ member) = uda.C.deserialize(__buffer);
+				mixin("__container." ~ member.name) = uda.C.deserialize(__buffer);
 			}
 		}
 		
 		static if(!is(typeof(__custom))) mixin({
 				
-				static if(hasUDA!(__traits(getMember, T, member), LengthImpl)) {
-					import std.conv : to;
-					auto length = getUDAs!(__traits(getMember, T, member), LengthImpl)[0];
-					immutable e = "L, le, " ~ length.type ~ ", " ~ (length.endianness == -1 ? "endianness" : "EndianType." ~ (cast(EndianType)length.endianness).to!string);
-				} else {
-					immutable e = "L, le, L, le";
-				}
-				
-				static if(hasUDA!(__traits(getMember, T, member), NoLength)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeNoLengthArray!(endianness, L, le, M, AddedUDAs)(__buffer);";
-				else static if(hasUDA!(__traits(getMember, T, member), Var)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(EndianType.var, " ~ e ~ ", M, AddedUDAs)(__buffer);";
-				else static if(hasUDA!(__traits(getMember, T, member), BigEndian)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(EndianType.bigEndian, " ~ e ~ ", M, AddedUDAs)(__buffer);";
-				else static if(hasUDA!(__traits(getMember, T, member), LittleEndian)) immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(EndianType.littleEndian, " ~ e ~ ", M, AddedUDAs)(__buffer);";
-				else immutable ret = "__container." ~ member ~ "=xserial.serial.deserializeImpl!(endianness, " ~ e ~ ", M, AddedUDAs)(__buffer);";
-				
-				static if(!hasUDA!(__traits(getMember, T, member), Condition)) return ret;
-				else return "with(__container){if(" ~ getUDAs!(__traits(getMember, T, member), Condition)[0].condition ~ "){" ~ ret ~ "}}";
-				
-			}());
+			static if(hasUDA!(__traits(getMember, T, member.name), LengthImpl)) {
+				import std.conv : to;
+				auto length = getUDAs!(__traits(getMember, T, member.name), LengthImpl)[0];
+				immutable e = "L, le, " ~ length.type ~ ", " ~ (length.endianness == -1 ? "endianness" : "EndianType." ~ (cast(EndianType)length.endianness).to!string);
+			} else {
+				immutable e = "L, le, L, le";
+			}
+			
+			static if(hasUDA!(__traits(getMember, T, member.name), NoLength)) immutable ret = "__container." ~ member.name ~ "=xserial.serial.deserializeNoLengthArray!(endianness, L, le, M, AddedUDAs)(__buffer);";
+			else static if(hasUDA!(__traits(getMember, T, member.name), Var)) immutable ret = "__container." ~ member.name ~ "=xserial.serial.deserializeImpl!(EndianType.var, " ~ e ~ ", M, AddedUDAs)(__buffer);";
+			else static if(hasUDA!(__traits(getMember, T, member.name), BigEndian)) immutable ret = "__container." ~ member.name ~ "=xserial.serial.deserializeImpl!(EndianType.bigEndian, " ~ e ~ ", M, AddedUDAs)(__buffer);";
+			else static if(hasUDA!(__traits(getMember, T, member.name), LittleEndian)) immutable ret = "__container." ~ member.name ~ "=xserial.serial.deserializeImpl!(EndianType.littleEndian, " ~ e ~ ", M, AddedUDAs)(__buffer);";
+			else immutable ret = "__container." ~ member.name ~ "=xserial.serial.deserializeImpl!(endianness, " ~ e ~ ", M, AddedUDAs)(__buffer);";
+			
+			if (member.condition.length==0) return ret;
+			else return "with(__container){if(" ~ member.condition ~ "){" ~ ret ~ "}}";
+			
+		}());
 		
-	}
+	}}
 }
 
 // ---------
@@ -520,6 +561,108 @@ void deserializeMembers(EndianType endianness, L, EndianType le, C, AddedUDAs...
 	assert(test5.serialize() == [1, 1, 2, 0, 0, 0, 1, 2, 0, 0, 0, 3, 4, 0, 0, 0]);
 	assert(deserialize!Test5([1, 1, 2, 0, 0, 0, 1, 2, 0, 0, 0, 3, 4, 0, 0, 0]) == test5);
 
+}
+
+@("nested Includes Excludes") unittest {
+	
+	struct Test1 {
+		ubyte a;
+		
+		@Exclude {
+			@EncodeOnly @Include ubyte b;
+			
+			@Condition("a==1") {
+				ubyte c;
+				@Include ubyte d;
+				@Exclude ubyte e;
+			}
+			
+			@Include @Exclude ubyte f;
+			ubyte g;
+			@Include ubyte h;
+		}
+	}
+	{
+		Test1 test1 = Test1(1, 2, 3, 4, 5, 6, 7, 8);
+		assert(test1.serialize() == [1, 2, 3, 4, 8]);
+		assert(deserialize!Test1([2, 1, 4]) == Test1(2, 0, 0, 1, 0, 0, 0, 4));
+	}
+	{
+		Test1 test1 = Test1(128, 2, 3, 4, 5, 6, 7, 8);
+		assert(test1.serialize() == [128, 2, 4, 8]);
+	}
+	
+}
+
+@("includer & excluder groups") unittest {
+	
+	enum G;
+	enum N;
+	
+	struct Test1 {
+		@Exclude:
+		@G ubyte a;
+		
+		@Include @N ubyte b;
+		
+		@Condition("a==1") @G ubyte c;
+		@G {
+			ubyte d;
+			@N ubyte e;
+		}
+	}
+	{
+		Test1 test1 = Test1(1, 2, 3, 4, 5);
+		assert(test1.serialize() == [2, 3]);
+		assert(Grouped!(Includer!G).serialize(test1) == [1, 2, 3, 4, 5]);
+		assert(Grouped!(Includer!G, Excluder!N).serialize(test1) == [1, 3, 4]);
+		assert(Grouped!(Includer!N).serialize(test1) == [2, 3, 5]);
+		
+		assert(deserialize!Test1([2]) == Test1(0, 2, 0, 0, 0));
+		assert(Grouped!(Includer!G).deserialize!Test1([1, 2, 3, 4, 5]) == Test1(1, 2, 3, 4, 5));
+		assert(Grouped!(Includer!G, Excluder!N).deserialize!Test1([1, 3, 4]) == Test1(1, 0, 3, 4, 0));
+		assert(Grouped!(Includer!N).deserialize!Test1([2, 5]) == Test1(0, 2, 0, 0, 5));
+	}
+	{
+		Test1 test1 = Test1(6, 2, 3, 4, 5);
+		assert(test1.serialize() == [2]);
+		assert(Grouped!(Includer!G).serialize(test1) == [6, 2, 3, 4, 5]);
+		assert(Grouped!(Includer!G, Excluder!N).serialize(test1) == [6, 3, 4]);
+		assert(Grouped!(Includer!N).serialize(test1) == [2, 5]);
+		
+		assert(deserialize!Test1([2]) == Test1(0, 2, 0, 0, 0));
+		assert(Grouped!(Includer!G).deserialize!Test1([6, 2, 3, 4, 5]) == Test1(6, 2, 3, 4, 5));
+		assert(Grouped!(Includer!G, Excluder!N).deserialize!Test1([6, 3, 4]) == Test1(6, 0, 3, 4, 0));
+		assert(Grouped!(Includer!N).deserialize!Test1([2, 5]) == Test1(0, 2, 0, 0, 5));
+	}
+	
+}
+
+@("struct groups") unittest {
+	
+	struct G { int id; }
+	
+	struct Test1 {
+		@Exclude:
+		@G ubyte a;
+		@G(0) ubyte b;
+		@G(1) @G(2) ubyte c;
+	}
+	
+	Test1 test1 = Test1(1, 2, 3);
+	assert(test1.serialize() == []);
+	assert(Grouped!(Includer!G).serialize(test1) == [1]);
+	assert(Grouped!(Includer!(G(0))).serialize(test1) == [1, 2]);
+	assert(Grouped!(Includer!(G(1))).serialize(test1) == [1, 3]);
+	assert(Grouped!(Includer!(G(0)),Includer!(G(1))).serialize(test1) == [1, 2, 3]);
+	assert(Grouped!(Includer!(G(0)),Includer!(G(1)), Excluder!(G(2))).serialize(test1) == [1, 2]);
+	
+	assert(Grouped!(Includer!G).deserialize!Test1([1]) == Test1(1, 0, 0));
+	assert(Grouped!(Includer!(G(0))).deserialize!Test1([1, 2]) == Test1(1, 2, 0));
+	assert(Grouped!(Includer!(G(1))).deserialize!Test1([1, 3]) == Test1(1, 0, 3));
+	assert(Grouped!(Includer!(G(0)),Includer!(G(1))).deserialize!Test1([1, 2, 3]) == Test1(1, 2, 3));
+	assert(Grouped!(Includer!(G(0)),Includer!(G(1)), Excluder!(G(2))).deserialize!Test1([1, 2]) == Test1(1, 2, 0));
+	
 }
 
 @("using buffer") unittest {
