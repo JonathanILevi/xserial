@@ -338,7 +338,11 @@ template Group(AddedUDAs...) {
 			T value;
 			static if(is(T == class))
 				value = new T();
-			else static assert(!is(T==interface), "No way currently to deserialize an interface.  I plan to implement a way to by giving an instance to serialize to.");
+			else static assert(!is(T==interface), "To deserialize an interface you must provide an instance to deserialize to.  `deserialize(instance,data)`");
+			return deserialize(value, buffer);
+		}
+		/// ditto
+		T deserialize(T)(T value, Buffer buffer) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
 			static if(__traits(hasMember, T, "deserialize") && __traits(compiles, value.deserialize(buffer))) {
 				value.deserialize(buffer);
 				return value;
@@ -424,6 +428,12 @@ template Group(AddedUDAs...) {
 			scope(exit) xfree(buffer);
 			return deserialize!(T, serializeLength)(buffer);
 		}
+		/// ditto
+		T deserialize(T)(T value, ubyte[] data) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
+			Buffer buffer = xalloc!Buffer(data);
+			scope(exit) xfree(buffer);
+			return deserialize(value, buffer);
+		}
 	}
 	
 	alias serialize	= Serializer!().serialize	;
@@ -452,6 +462,19 @@ template Group(AddedUDAs...) {
 	}
 	T deserialize(T, Endian endianness, L=uint, Endian lengthEndianness=endianness)(ubyte[] data) {
 		return Serializer!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness).deserialize!T(data);
+	}
+	
+	T deserialize(EndianType endianness, L=uint, EndianType lengthEndianness=endianness, T)(T value, Buffer buffer) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
+		return Serializer!(endianness, L, lengthEndianness).deserialize(value, buffer);
+	}
+	T deserialize(EndianType endianness, L=uint, EndianType lengthEndianness=endianness, T)(T value, ubyte[] data) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
+		return Serializer!(endianness, L, lengthEndianness).deserialize(value, data);
+	}
+	T deserialize(Endian endianness, L=uint, Endian lengthEndianness=endianness, T)(T value, Buffer buffer) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
+		return Serializer!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness).deserialize(value, buffer);
+	}
+	T deserialize(Endian endianness, L=uint, Endian lengthEndianness=endianness, T)(T value, ubyte[] data) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
+		return Serializer!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness).deserialize(value, data);
 	}
 }
 
@@ -742,6 +765,52 @@ alias Deserializer	= Group!().Deserializer	;
 		assert(test.serialize!(EndianType.bigEndian)==[2,0,1,2]);
 		assert([2,0,1,2].deserialize!(Test2,EndianType.bigEndian)==test);
 	}
+}
+
+@("interface and deserialize to instance") unittest {
+	interface ITest {
+		@LittleEndianLength @Include @property {
+			ubyte[] aa();
+			void aa(ubyte[]);
+		}
+		@property {
+			ubyte cc();
+		}
+	}
+	class Test : ITest {
+		@Length!ubyte ushort[] a;
+		@Exclude ubyte b;
+		ubyte c;
+		
+		this(ushort[] a, ubyte b, ubyte c) {
+			this.a = a;
+			this.b = b;
+			this.c = c;
+		}
+		
+		@property {
+			import std.algorithm, std.array;
+			ubyte[] aa() {
+				return a.map!((v){return cast(ubyte)v;}).array;
+			}
+			void aa(ubyte[] n) {
+				a = n.map!((v){return cast(ushort)v;}).array;
+			}
+			ubyte cc() {
+				return c;
+			}
+		}
+	}
+	
+	Test test = new Test([1,2], 3, 4);
+	test.deserialize!(EndianType.bigEndian)([5,0,1,0,2,0,3,0,4,0,5,6]);
+	assert(test.a==[1,2,3,4,5] && test.b==3 && test.c==6);
+	
+	ITest iTest = test;
+	iTest.deserialize!(EndianType.bigEndian)([2,0,0,0,1,2]);
+	assert(test.a==[1,2] && test.b==3 && test.c==6);
+	
+	assert(iTest.serialize!(Endian.bigEndian) == [2,0,0,0,1,2]);
 }
 
 // for code coverage: because the coverage report does not understand CTFE
