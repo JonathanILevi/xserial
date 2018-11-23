@@ -70,7 +70,7 @@ template Group(AddedUDAs...) {
 		
 		foreach(member; __traits(allMembers, T)) {
 			string condition = "";
-			static if(!hasUDA!(__traits(getMember, T, member), Only)) {
+			static if(is(typeof(mixin("T." ~ member))) && !hasUDA!(__traits(getMember, T, member), Only)) {
 				static foreach_reverse (Attribute; __traits(getAttributes, __traits(getMember, T, member))) {
 					static if (!is(typeof(done))) {
 						static if(is(typeof(Attribute)==Condition)) {
@@ -91,16 +91,14 @@ template Group(AddedUDAs...) {
 					}
 				}
 				static if (!is(typeof(done))) {
-					static if(is(typeof(mixin("T." ~ member)))) {
-						mixin("alias M = typeof(T." ~ member ~ ");");
-						static if(
-							isType!M &&
-							!isCallable!M &&
-							!__traits(compiles, { mixin("auto test=T." ~ member ~ ";"); }) &&   // static members
-							!__traits(compiles, { mixin("auto test=T.init." ~ member ~ "();"); }) // properties
-							) {
-							members ~= Member(member);
-						}
+					mixin("alias M = typeof(T." ~ member ~ ");");
+					static if(
+						isType!M &&
+						!isCallable!M &&
+						!__traits(compiles, { mixin("auto test=T." ~ member ~ ";"); }) &&   // static members
+						!__traits(compiles, { mixin("auto test=T.init." ~ member ~ "();"); }) // properties
+						) {
+						members ~= Member(member);
 					}
 				}
 			}
@@ -327,7 +325,7 @@ template Group(AddedUDAs...) {
 				return value;
 			}
 		}
-		/// Deerialize Tuple
+		/// Deserialize Tuple
 		T deserialize(T)(Buffer buffer) if(isTuple!T) {
 			T value;
 			static foreach(i, U; T.Types) {
@@ -412,7 +410,7 @@ template Group(AddedUDAs...) {
 					}
 				}}
 				return value;
-			}	
+			}
 		}
 		/// Without Buffer
 		T deserialize(T)(ubyte[] data) {
