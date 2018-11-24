@@ -417,19 +417,19 @@ template Group(AddedUDAs...) {
 			}
 		}
 		/// Without Buffer
-		T deserialize(T)(ubyte[] data) {
+		T deserialize(T)(const(ubyte)[] data) {
 			Buffer buffer = xalloc!Buffer(data);
 			scope(exit) xfree(buffer);
 			return deserialize!T(buffer);
 		}
 		/// ditto
-		T deserialize(T, bool serializeLength)(ubyte[] data) if(isDynamicArray!T || isAssociativeArray!T) {
+		T deserialize(T, bool serializeLength)(const(ubyte)[] data) if(isDynamicArray!T || isAssociativeArray!T) {
 			Buffer buffer = xalloc!Buffer(data);
 			scope(exit) xfree(buffer);
 			return deserialize!(T, serializeLength)(buffer);
 		}
 		/// ditto
-		T deserialize(T)(T value, ubyte[] data) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
+		T deserialize(T)(T value, const(ubyte)[] data) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
 			Buffer buffer = xalloc!Buffer(data);
 			scope(exit) xfree(buffer);
 			return deserialize(value, buffer);
@@ -454,26 +454,26 @@ template Group(AddedUDAs...) {
 	T deserialize(T, EndianType endianness, L=uint, EndianType lengthEndianness=endianness)(Buffer buffer) {
 		return Serializer!(endianness, L, lengthEndianness).deserialize!T(buffer);
 	}
-	T deserialize(T, EndianType endianness, L=uint, EndianType lengthEndianness=endianness)(ubyte[] data) {
+	T deserialize(T, EndianType endianness, L=uint, EndianType lengthEndianness=endianness)(const(ubyte)[] data) {
 		return Serializer!(endianness, L, lengthEndianness).deserialize!T(data);
 	}
 	T deserialize(T, Endian endianness, L=uint, Endian lengthEndianness=endianness)(Buffer buffer) {
 		return Serializer!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness).deserialize!T(buffer);
 	}
-	T deserialize(T, Endian endianness, L=uint, Endian lengthEndianness=endianness)(ubyte[] data) {
+	T deserialize(T, Endian endianness, L=uint, Endian lengthEndianness=endianness)(const(ubyte)[] data) {
 		return Serializer!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness).deserialize!T(data);
 	}
 	
 	T deserialize(EndianType endianness, L=uint, EndianType lengthEndianness=endianness, T)(T value, Buffer buffer) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
 		return Serializer!(endianness, L, lengthEndianness).deserialize(value, buffer);
 	}
-	T deserialize(EndianType endianness, L=uint, EndianType lengthEndianness=endianness, T)(T value, ubyte[] data) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
+	T deserialize(EndianType endianness, L=uint, EndianType lengthEndianness=endianness, T)(T value, const(ubyte)[] data) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
 		return Serializer!(endianness, L, lengthEndianness).deserialize(value, data);
 	}
 	T deserialize(Endian endianness, L=uint, Endian lengthEndianness=endianness, T)(T value, Buffer buffer) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
 		return Serializer!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness).deserialize(value, buffer);
 	}
-	T deserialize(Endian endianness, L=uint, Endian lengthEndianness=endianness, T)(T value, ubyte[] data) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
+	T deserialize(Endian endianness, L=uint, Endian lengthEndianness=endianness, T)(T value, const(ubyte)[] data) if(!isTuple!T && (is(T == class) || is(T == struct) || is(T == interface))) {
 		return Serializer!(cast(EndianType)endianness, L, cast(EndianType)lengthEndianness).deserialize(value, data);
 	}
 }
@@ -811,6 +811,51 @@ alias Deserializer	= Group!().Deserializer	;
 	assert(test.a==[1,2] && test.b==3 && test.c==6);
 	
 	assert(iTest.serialize!(Endian.bigEndian) == [2,0,0,0,1,2]);
+}
+
+@("immutability") unittest {
+	{
+		ubyte[] test = [1,2,3,4];
+		assert(test.serialize!(Endian.littleEndian, ubyte)==[4,1,2,3,4]);
+		assert(test.deserialize!(ubyte[4]) == [1,2,3,4]);
+	}
+	{
+		const(ubyte)[] test = [1,2,3,4];
+		assert(test.serialize!(Endian.littleEndian, ubyte)==[4,1,2,3,4]);
+		assert(test.deserialize!(ubyte[4]) == [1,2,3,4]);
+	}
+	{
+		immutable(ubyte)[] test = [1,2,3,4];
+		assert(test.serialize!(Endian.littleEndian, ubyte)==[4,1,2,3,4]);
+		assert(test.deserialize!(ubyte[4]) == [1,2,3,4]);
+	}
+	{
+		const(ubyte[]) test = [1,2,3,4];
+		assert(test.serialize!(Endian.littleEndian, ubyte)==[4,1,2,3,4]);
+		assert(test.deserialize!(ubyte[4]) == [1,2,3,4]);
+	}
+	{
+		immutable(ubyte[]) test = [1,2,3,4];
+		assert(test.serialize!(Endian.littleEndian, ubyte)==[4,1,2,3,4]);
+		assert(test.deserialize!(ubyte[4]) == [1,2,3,4]);
+	}
+	{
+		struct Test {
+			ubyte a;
+		}
+		{
+			Test test = Test(1);
+			assert(test.serialize==[1]);
+		}
+		{
+			const Test test = Test(1);
+			assert(test.serialize==[1]);
+		}
+		{
+			immutable Test test = Test(1);
+			assert(test.serialize==[1]);
+		}
+	}
 }
 
 // for code coverage: because the coverage report does not understand CTFE
