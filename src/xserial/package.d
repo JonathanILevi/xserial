@@ -1,6 +1,6 @@
 module xserial;
 
-public import xbuffer;
+public import xbuffer : BufferOverflowException;
 
-public import xserial.attribute : Exclude, Include, EncodeOnly, DecodeOnly, Condition, BigEndian, LittleEndian, Var, NoLength, Length, Custom;
-public import xserial.serial : serialize, deserialize;
+public import xserial.attribute;
+public import xserial.serial;
